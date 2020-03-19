@@ -177,13 +177,13 @@ func main() {
 
 func updateCLI(nodes []radix.ClusterNode, connections []radix.Conn, node_subscriptions_count []int, tick *time.Ticker, c chan os.Signal) bool {
 	w := new(tabwriter.Writer)
-	w.Init(os.Stdout, 20, 0, 1, ' ', tabwriter.AlignRight)
+	w.Init(os.Stdout, 25, 0, 1, ' ', tabwriter.AlignRight)
 	for idx, slot := range nodes {
 		c, err := radix.Dial("tcp", slot.Addr)
 		if err != nil {
 			panic(err)
 		}
-		fmt.Fprint(w, fmt.Sprintf("shard #%d\t", idx))
+		fmt.Fprint(w, fmt.Sprintf("shard #%d\t", idx+1))
 		connections = append(connections, c)
 	}
 	fmt.Fprint(w, "\n")
@@ -204,10 +204,18 @@ func updateCLI(nodes []radix.ClusterNode, connections []radix.Conn, node_subscri
 						if eint != nil {
 							fmt.Fprint(w, fmt.Sprintf("----\t"))
 						} else {
-							number_subscribers := node_subscriptions_count[idx]
-							number_publishers := shard_clients - 1 - number_subscribers
+							var pubsubList string
+							e := c.Do(radix.FlatCmd(&pubsubList, "CLIENT", "LIST", "TYPE","PUBSUB"))
+							if e != nil {
+								fmt.Fprint(w, fmt.Sprintf("----\t"))
+							}
+							subscribersList := strings.Split(pubsubList, "\n")
+							//fmt.Println(subscribersList)
+							expected_subscribers := node_subscriptions_count[idx]
+							number_subscribers := len(subscribersList)-1
+							others := shard_clients - 1 - number_subscribers
 
-							fmt.Fprint(w, fmt.Sprintf("%d (p: %d) (s: %d)\t", shard_clients, number_publishers, number_subscribers))
+							fmt.Fprint(w, fmt.Sprintf("%d (other %d sub %d==%d)\t", shard_clients, others, number_subscribers, expected_subscribers))
 						}
 
 					}
