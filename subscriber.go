@@ -119,7 +119,7 @@ func main() {
 		ports := strings.Split(*port, ",")
 		for idx, nhost := range strings.Split(*host, ",") {
 			node := radix.ClusterNode{
-				Addr:            fmt.Sprintf("%s:%d", nhost, ports[idx]),
+				Addr:            fmt.Sprintf("%s:%s", nhost, ports[idx]),
 				ID:              "",
 				Slots:           nil,
 				SecondaryOfAddr: "",
