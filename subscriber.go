@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"text/tabwriter"
@@ -77,7 +78,7 @@ func bootstrapPubSub(addr string, subscriberName string, channel string) (radix.
 
 func main() {
 	host := flag.String("host", "127.0.0.1", "redis host.")
-	port := flag.Int("port", 6379, "redis port.")
+	port := flag.String("port", "6379", "redis port.")
 	channel_minimum := flag.Int("channel-minimum", 1, "channel ID minimum value ( each channel has a dedicated thread ).")
 	channel_maximum := flag.Int("channel-maximum", 100, "channel ID maximum value ( each channel has a dedicated thread ).")
 	subscribers_per_channel := flag.Int("subscribers-per-channel", 1, "number of subscribers per channel.")
@@ -88,16 +89,17 @@ func main() {
 	printMessages := flag.Bool("print-messages", false, "print messages.")
 	flag.Parse()
 
-	// Create a normal redis connection
-	conn, err := radix.Dial("tcp", fmt.Sprintf("%s:%d", *host, *port))
-	if err != nil {
-		panic(err)
-	}
-
 	var nodes []radix.ClusterNode
+	var node_subscriptions_count []int
+
 	if *distributeSubscribers {
+		// Create a normal redis connection
+		conn, err := radix.Dial("tcp", fmt.Sprintf("%s:%s", *host, *port))
+		if err != nil {
+			panic(err)
+		}
 		var topology radix.ClusterTopo
-		err := conn.Do(radix.FlatCmd(&topology, "CLUSTER", "SLOTS"))
+		err = conn.Do(radix.FlatCmd(&topology, "CLUSTER", "SLOTS"))
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -109,17 +111,26 @@ func main() {
 				slot.Addr = fmt.Sprintf("%s:%s", *host, slot_port)
 			}
 			nodes = append(nodes, slot)
+			node_subscriptions_count = append(node_subscriptions_count, 0)
 		}
+		conn.Close()
 	} else {
-		nodes = []radix.ClusterNode{{
-			Addr:            fmt.Sprintf("%s:%d", *host, *port),
-			ID:              "",
-			Slots:           nil,
-			SecondaryOfAddr: "",
-			SecondaryOfID:   "",
-		}}
+		nodes = []radix.ClusterNode{}
+		ports := strings.Split(*port, ",")
+		for idx, nhost := range strings.Split(*host, ",") {
+			node := radix.ClusterNode{
+				Addr:            fmt.Sprintf("%s:%d", nhost, ports[idx]),
+				ID:              "",
+				Slots:           nil,
+				SecondaryOfAddr: "",
+				SecondaryOfID:   "",
+			}
+			nodes = append(nodes, node)
+			node_subscriptions_count = append(node_subscriptions_count, 0)
+		}
+
 	}
-	conn.Close()
+
 	if strings.Compare(*client_output_buffer_limit_pubsub, "") != 0 {
 		checkClientOutputBufferLimitPubSub(nodes, client_output_buffer_limit_pubsub)
 	}
@@ -129,10 +140,15 @@ func main() {
 
 	// a WaitGroup for the goroutines to tell us they've stopped
 	wg := sync.WaitGroup{}
+	total_channels := *channel_maximum - *channel_minimum + 1
+	subscriptions_per_node := total_channels / len(nodes)
+	total_subscriptions := total_channels * *subscribers_per_channel
+	fmt.Println(fmt.Sprintf("Total subcriptions: %d. Subscriptions per node %d", total_subscriptions, subscriptions_per_node))
 
 	for channel_id := *channel_minimum; channel_id <= *channel_maximum; channel_id++ {
 		for channel_subscriber_number := 1; channel_subscriber_number <= *subscribers_per_channel; channel_subscriber_number++ {
-			nodes_pos := (channel_id * channel_subscriber_number) % len(nodes)
+			nodes_pos := channel_id % len(nodes)
+			node_subscriptions_count[nodes_pos] = node_subscriptions_count[nodes_pos] + 1
 			addr := nodes[nodes_pos]
 			channel := fmt.Sprintf("%s%d", *subscribe_prefix, channel_id)
 			subscriberName := fmt.Sprintf("subscriber#%d-%s%d", channel_subscriber_number, *subscribe_prefix, channel_id)
@@ -148,7 +164,7 @@ func main() {
 
 	tick := time.NewTicker(time.Duration(*client_update_tick) * time.Second)
 	var connections []radix.Conn
-	if updateCLI(nodes, connections, tick, c) {
+	if updateCLI(nodes, connections, node_subscriptions_count, tick, c) {
 		return
 	}
 
@@ -159,17 +175,16 @@ func main() {
 
 }
 
-func updateCLI(nodes []radix.ClusterNode, connections []radix.Conn, tick *time.Ticker, c chan os.Signal) bool {
+func updateCLI(nodes []radix.ClusterNode, connections []radix.Conn, node_subscriptions_count []int, tick *time.Ticker, c chan os.Signal) bool {
 	w := new(tabwriter.Writer)
-	w.Init(os.Stdout, 8, 0, 1, ' ', tabwriter.AlignRight)
+	w.Init(os.Stdout, 20, 0, 1, ' ', tabwriter.AlignRight)
 	for idx, slot := range nodes {
 		c, err := radix.Dial("tcp", slot.Addr)
 		if err != nil {
 			panic(err)
 		}
-		fmt.Fprint(w, fmt.Sprintf("s%d\t", idx))
+		fmt.Fprint(w, fmt.Sprintf("shard #%d\t", idx))
 		connections = append(connections, c)
-		//defer c.Close()
 	}
 	fmt.Fprint(w, "\n")
 	w.Flush()
@@ -177,7 +192,7 @@ func updateCLI(nodes []radix.ClusterNode, connections []radix.Conn, tick *time.T
 		select {
 		case <-tick.C:
 			{
-				for _, c := range connections {
+				for idx, c := range connections {
 					var infoOutput string
 					e := c.Do(radix.FlatCmd(&infoOutput, "INFO", "CLIENTS"))
 					if e != nil {
@@ -185,7 +200,16 @@ func updateCLI(nodes []radix.ClusterNode, connections []radix.Conn, tick *time.T
 					} else {
 						connected_clients_line := strings.TrimSuffix(strings.Split(infoOutput, "\r\n")[1], "\r\n")
 						i := strings.Index(connected_clients_line, ":")
-						fmt.Fprint(w, fmt.Sprintf("%s\t", connected_clients_line[i+1:]))
+						shard_clients, eint := strconv.Atoi(connected_clients_line[i+1:])
+						if eint != nil {
+							fmt.Fprint(w, fmt.Sprintf("----\t"))
+						} else {
+							number_subscribers := node_subscriptions_count[idx]
+							number_publishers := shard_clients - 1 - number_subscribers
+
+							fmt.Fprint(w, fmt.Sprintf("%d (p: %d) (s: %d)\t", shard_clients, number_publishers, number_subscribers))
+						}
+
 					}
 				}
 				fmt.Fprint(w, "\r\n")
