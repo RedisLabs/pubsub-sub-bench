@@ -7,7 +7,6 @@ import (
 	"github.com/mediocregopher/radix"
 	"io/ioutil"
 	"log"
-	"math/rand"
 	"os"
 	"os/signal"
 	"strings"
@@ -34,13 +33,12 @@ type testResult struct {
 	Addresses             []string  `json:"Addresses"`
 }
 
-func subscriberRoutine(addr string, subscriberName string, channel string, messages_per_channel int64, printMessages bool, stop chan struct{}, wg *sync.WaitGroup) {
+func subscriberRoutine(addr string, subscriberName string, channel string, printMessages bool, stop chan struct{}, wg *sync.WaitGroup) {
 	// tell the caller we've stopped
 	defer wg.Done()
 
-	conn, _, _, msgCh, tick := bootstrapPubSub(addr, subscriberName, channel)
+	conn, _, _, msgCh, _ := bootstrapPubSub(addr, subscriberName, channel)
 	defer conn.Close()
-	defer tick.Stop()
 
 	for {
 		select {
@@ -76,15 +74,14 @@ func bootstrapPubSub(addr string, subscriberName string, channel string) (radix.
 	if err != nil {
 		panic(err)
 	}
-	tickTime := 1 + rand.Intn(2)
-	tick := time.NewTicker(time.Duration(tickTime) * time.Second)
 
-	return conn, err, ps, msgCh, tick
+	return conn, err, ps, msgCh, nil
 }
 
 func main() {
 	host := flag.String("host", "127.0.0.1", "redis host.")
 	port := flag.String("port", "6379", "redis port.")
+	subscribers_placement := flag.String("subscribers-placement-per-channel", "dense", "(dense,sparse) dense - Place all subscribers to channel in a specific shard. sparse- spread the subscribers across as many shards possible, in a round-robin manner.")
 	channel_minimum := flag.Int("channel-minimum", 1, "channel ID minimum value ( each channel has a dedicated thread ).")
 	channel_maximum := flag.Int("channel-maximum", 100, "channel ID maximum value ( each channel has a dedicated thread ).")
 	subscribers_per_channel := flag.Int("subscribers-per-channel", 1, "number of subscribers per channel.")
@@ -107,51 +104,15 @@ func main() {
 	}
 
 	if *distributeSubscribers {
-		// Create a normal redis connection
-		conn, err := radix.Dial("tcp", fmt.Sprintf("%s:%s", *host, *port))
-		if err != nil {
-			panic(err)
-		}
-		var topology radix.ClusterTopo
-		err = conn.Do(radix.FlatCmd(&topology, "CLUSTER", "SLOTS"))
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		for _, slot := range topology.Map() {
-			slot_host := strings.Split(slot.Addr, ":")[0]
-			slot_port := strings.Split(slot.Addr, ":")[1]
-			if strings.Compare(slot_host, "127.0.0.1") == 0 {
-				slot.Addr = fmt.Sprintf("%s:%s", *host, slot_port)
-			}
-			nodes = append(nodes, slot)
-			nodesAddresses = append(nodesAddresses, slot.Addr)
-			node_subscriptions_count = append(node_subscriptions_count, 0)
-		}
-		conn.Close()
+		nodes, nodesAddresses, node_subscriptions_count = getClusterNodesFromTopology(host, port, nodes, nodesAddresses, node_subscriptions_count)
 	} else {
-		nodes = []radix.ClusterNode{}
-		ports := strings.Split(*port, ",")
-		for idx, nhost := range strings.Split(*host, ",") {
-			node := radix.ClusterNode{
-				Addr:            fmt.Sprintf("%s:%s", nhost, ports[idx]),
-				ID:              "",
-				Slots:           nil,
-				SecondaryOfAddr: "",
-				SecondaryOfID:   "",
-			}
-			nodes = append(nodes, node)
-			nodesAddresses = append(nodesAddresses, node.Addr)
-			node_subscriptions_count = append(node_subscriptions_count, 0)
-		}
-
+		nodes, nodesAddresses, node_subscriptions_count = getClusterNodesFromArgs(nodes, port, host, nodesAddresses, node_subscriptions_count)
 	}
 
 	if strings.Compare(*client_output_buffer_limit_pubsub, "") != 0 {
 		checkClientOutputBufferLimitPubSub(nodes, client_output_buffer_limit_pubsub)
 	}
 
-	// a channel to tell `tick()` and `tock()` to stop
 	stopChan := make(chan struct{})
 
 	// a WaitGroup for the goroutines to tell us they've stopped
@@ -162,18 +123,17 @@ func main() {
 	total_messages := int64(total_subscriptions) * *messages_per_channel_subscriber
 	fmt.Println(fmt.Sprintf("Total subcriptions: %d. Subscriptions per node %d. Total messages: %d", total_subscriptions, subscriptions_per_node, total_messages))
 
-	// Launch routine to accumulate message count
-	//go accumulate()
-
-	for channel_id := *channel_minimum; channel_id <= *channel_maximum; channel_id++ {
-		for channel_subscriber_number := 1; channel_subscriber_number <= *subscribers_per_channel; channel_subscriber_number++ {
-			nodes_pos := channel_id % len(nodes)
-			node_subscriptions_count[nodes_pos]++
-			addr := nodes[nodes_pos]
-			channel := fmt.Sprintf("%s%d", *subscribe_prefix, channel_id)
-			subscriberName := fmt.Sprintf("subscriber#%d-%s%d", channel_subscriber_number, *subscribe_prefix, channel_id)
-			wg.Add(1)
-			go subscriberRoutine(addr.Addr, subscriberName, channel, *messages_per_channel_subscriber, *printMessages, stopChan, &wg)
+	if strings.Compare(*subscribers_placement, "dense") == 0 {
+		for channel_id := *channel_minimum; channel_id <= *channel_maximum; channel_id++ {
+			for channel_subscriber_number := 1; channel_subscriber_number <= *subscribers_per_channel; channel_subscriber_number++ {
+				nodes_pos := channel_id % len(nodes)
+				node_subscriptions_count[nodes_pos]++
+				addr := nodes[nodes_pos]
+				channel := fmt.Sprintf("%s%d", *subscribe_prefix, channel_id)
+				subscriberName := fmt.Sprintf("subscriber#%d-%s%d", channel_subscriber_number, *subscribe_prefix, channel_id)
+				wg.Add(1)
+				go subscriberRoutine(addr.Addr, subscriberName, channel, *printMessages, stopChan, &wg)
+			}
 		}
 	}
 
@@ -183,14 +143,15 @@ func main() {
 	w := new(tabwriter.Writer)
 
 	tick := time.NewTicker(time.Duration(*client_update_tick) * time.Second)
-	var connections []radix.Conn
-	closed, start_time, duration, totalMessages, messageRateTs := updateCLI(nodes, connections, node_subscriptions_count, tick, c, total_messages, w, *test_time)
+	closed, start_time, duration, totalMessages, messageRateTs := updateCLI(tick, c, total_messages, w, *test_time)
 	messageRate := float64(totalMessages) / float64(duration.Seconds())
+
 	fmt.Fprint(w, fmt.Sprintf("#################################################\nTotal Duration %f Seconds\nMessage Rate %f\n#################################################\n", duration.Seconds(), messageRate))
 	fmt.Fprint(w, "\r\n")
 	w.Flush()
 
 	if strings.Compare(*json_out_file, "") != 0 {
+
 		res := testResult{
 			StartTime:             start_time.Unix(),
 			Duration:              duration.Seconds(),
@@ -226,7 +187,51 @@ func main() {
 	wg.Wait()
 }
 
-func updateCLI(nodes []radix.ClusterNode, connections []radix.Conn, node_subscriptions_count []int, tick *time.Ticker, c chan os.Signal, message_limit int64, w *tabwriter.Writer, test_time int) (bool, time.Time, time.Duration, uint64, []float64) {
+func getClusterNodesFromArgs(nodes []radix.ClusterNode, port *string, host *string, nodesAddresses []string, node_subscriptions_count []int) ([]radix.ClusterNode, []string, []int) {
+	nodes = []radix.ClusterNode{}
+	ports := strings.Split(*port, ",")
+	for idx, nhost := range strings.Split(*host, ",") {
+		node := radix.ClusterNode{
+			Addr:            fmt.Sprintf("%s:%s", nhost, ports[idx]),
+			ID:              "",
+			Slots:           nil,
+			SecondaryOfAddr: "",
+			SecondaryOfID:   "",
+		}
+		nodes = append(nodes, node)
+		nodesAddresses = append(nodesAddresses, node.Addr)
+		node_subscriptions_count = append(node_subscriptions_count, 0)
+	}
+	return nodes, nodesAddresses, node_subscriptions_count
+}
+
+func getClusterNodesFromTopology(host *string, port *string, nodes []radix.ClusterNode, nodesAddresses []string, node_subscriptions_count []int) ([]radix.ClusterNode, []string, []int) {
+	// Create a normal redis connection
+	conn, err := radix.Dial("tcp", fmt.Sprintf("%s:%s", *host, *port))
+	if err != nil {
+		panic(err)
+	}
+	var topology radix.ClusterTopo
+	err = conn.Do(radix.FlatCmd(&topology, "CLUSTER", "SLOTS"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, slot := range topology.Map() {
+		slot_host := strings.Split(slot.Addr, ":")[0]
+		slot_port := strings.Split(slot.Addr, ":")[1]
+		if strings.Compare(slot_host, "127.0.0.1") == 0 {
+			slot.Addr = fmt.Sprintf("%s:%s", *host, slot_port)
+		}
+		nodes = append(nodes, slot)
+		nodesAddresses = append(nodesAddresses, slot.Addr)
+		node_subscriptions_count = append(node_subscriptions_count, 0)
+	}
+	conn.Close()
+	return nodes, nodesAddresses, node_subscriptions_count
+}
+
+func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit int64, w *tabwriter.Writer, test_time int) (bool, time.Time, time.Duration, uint64, []float64) {
 
 	start := time.Now()
 	prevTime := time.Now()
