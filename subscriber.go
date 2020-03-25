@@ -57,22 +57,22 @@ func subscriberRoutine(addr string, subscriberName string, channel string, print
 func bootstrapPubSub(addr string, subscriberName string, channel string) (radix.Conn, error, radix.PubSubConn, chan radix.PubSubMessage, *time.Ticker) {
 	// Create a normal redis connection
 	conn, err := radix.Dial("tcp", addr)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	err = conn.Do(radix.FlatCmd(nil, "CLIENT", "SETNAME", subscriberName))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	if err != nil {
-		panic(err)
-	}
 	// Pass that connection into PubSub, conn should never get used after this
 	ps := radix.PubSub(conn)
 
 	msgCh := make(chan radix.PubSubMessage)
 	err = ps.Subscribe(msgCh, channel)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 
 	return conn, err, ps, msgCh, nil

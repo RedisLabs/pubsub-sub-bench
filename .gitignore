@@ -87,3 +87,7 @@ Thumbs.db
 # Json Results #
 ################
 *.json
+
+# Coverage Results #
+####################
+coverage.txt
