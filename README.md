@@ -18,8 +18,7 @@ The easiest way to get and install the Subscriber Go program is to use
 # Fetch this repo
 go get github.com/filipecosta90/pubsub-sub-bench
 cd $GOPATH/src/github.com/filipecosta90/pubsub-sub-bench
-go get ./...
-go build .
+make
 ```
 
 ## Usage of pubsub-sub-bench
