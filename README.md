@@ -18,16 +18,16 @@ This benchmark go program is **know to be supported for go >= 1.11**.
 The easiest way to get and install the Subscriber Go program is to use `go get` and then `go install`:
 
 ```
-go get github.com/filipecosta90/pubsub-sub-bench
-cd $GOPATH/src/github.com/filipecosta90/pubsub-sub-bench
+go get github.com/RedisLabs/pubsub-sub-bench
+cd $GOPATH/src/github.com/RedisLabs/pubsub-sub-bench
 make
 ```
 
 #### Updating 
 To update the Subscriber Go program use `go get -u` to retrieve the latest version:.
 ```
-go get -u github.com/filipecosta90/pubsub-sub-bench
-cd $GOPATH/src/github.com/filipecosta90/pubsub-sub-bench
+go get -u github.com/RedisLabs/pubsub-sub-bench
+cd $GOPATH/src/github.com/RedisLabs/pubsub-sub-bench
 make
 ```
 
