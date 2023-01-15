@@ -24,4 +24,3 @@ jobs:
           sha256sum: true
           asset_name: pubsub-sub-bench-${{ matrix.goos }}-${{ matrix.goarch }}
           build_command: "make build"
-  <
