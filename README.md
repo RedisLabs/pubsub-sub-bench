@@ -1,7 +1,7 @@
 
-[![license](https://img.shields.io/github/license/RedisLabs/pubsub-sub-bench.svg)](https://github.com/RedisLabs/pubsub-sub-bench)
-[![GitHub issues](https://img.shields.io/github/release/RedisLabs/pubsub-sub-bench.svg)](https://github.com/RedisLabs/pubsub-sub-bench/releases/latest)
-[![codecov](https://codecov.io/github/RedisLabs/pubsub-sub-bench/branch/main/graph/badge.svg?token=B6ISQSDK3Y)](https://codecov.io/github/RedisLabs/pubsub-sub-bench)
+[![license](https://img.shields.io/github/license/filipecosta90/pubsub-sub-bench.svg)](https://github.com/filipecosta90/pubsub-sub-bench)
+[![GitHub issues](https://img.shields.io/github/release/filipecosta90/pubsub-sub-bench.svg)](https://github.com/filipecosta90/pubsub-sub-bench/releases/latest)
+[![codecov](https://codecov.io/github/filipecosta90/pubsub-sub-bench/branch/main/graph/badge.svg?token=B6ISQSDK3Y)](https://codecov.io/github/filipecosta90/pubsub-sub-bench)
 
 
 ## Overview
@@ -21,19 +21,19 @@ Several aspects can dictate the overall system performance, like the:
 
 If you don't have go on your machine and just want to use the produced binaries you can download the following prebuilt bins:
 
-https://github.com/RedisLabs/pubsub-sub-bench/releases/latest
+https://github.com/filipecosta90/pubsub-sub-bench/releases/latest
 
 | OS | Arch | Link |
 | :---         |     :---:      |          ---: |
-| Linux   | amd64  (64-bit X86)     | [pubsub-sub-bench-linux-amd64](https://github.com/RedisLabs/pubsub-sub-bench/releases/latest/download/pubsub-sub-bench-linux-amd64.tar.gz)    |
-| Linux   | arm64 (64-bit ARM)     | [pubsub-sub-bench-linux-arm64](https://github.com/RedisLabs/pubsub-sub-bench/releases/latest/download/pubsub-sub-bench-linux-arm64.tar.gz)    |
-| Darwin   | amd64  (64-bit X86)     | [pubsub-sub-bench-darwin-amd64](https://github.com/RedisLabs/pubsub-sub-bench/releases/latest/download/pubsub-sub-bench-darwin-amd64.tar.gz)    |
-| Darwin   | arm64 (64-bit ARM)     | [pubsub-sub-bench-darwin-arm64](https://github.com/RedisLabs/pubsub-sub-bench/releases/latest/download/pubsub-sub-bench-darwin-arm64.tar.gz)    |
+| Linux   | amd64  (64-bit X86)     | [pubsub-sub-bench-linux-amd64](https://github.com/filipecosta90/pubsub-sub-bench/releases/latest/download/pubsub-sub-bench-linux-amd64.tar.gz)    |
+| Linux   | arm64 (64-bit ARM)     | [pubsub-sub-bench-linux-arm64](https://github.com/filipecosta90/pubsub-sub-bench/releases/latest/download/pubsub-sub-bench-linux-arm64.tar.gz)    |
+| Darwin   | amd64  (64-bit X86)     | [pubsub-sub-bench-darwin-amd64](https://github.com/filipecosta90/pubsub-sub-bench/releases/latest/download/pubsub-sub-bench-darwin-amd64.tar.gz)    |
+| Darwin   | arm64 (64-bit ARM)     | [pubsub-sub-bench-darwin-arm64](https://github.com/filipecosta90/pubsub-sub-bench/releases/latest/download/pubsub-sub-bench-darwin-arm64.tar.gz)    |
 
 Here's how bash script to download and try it:
 
 ```bash
-wget -c https://github.com/RedisLabs/pubsub-sub-bench/releases/latest/download/pubsub-sub-bench-$(uname -mrs | awk '{ print tolower($1) }')-$(dpkg --print-architecture).tar.gz -O - | tar -xz
+wget -c https://github.com/filipecosta90/pubsub-sub-bench/releases/latest/download/pubsub-sub-bench-$(uname -mrs | awk '{ print tolower($1) }')-$(dpkg --print-architecture).tar.gz -O - | tar -xz
 
 # give it a try
 ./pubsub-sub-bench --help
@@ -47,8 +47,8 @@ To install the benchmark utility with a Go Env do as follow:
 `go get` and then `go install`:
 ```bash
 # Fetch this repo
-go get github.com/RedisLabs/pubsub-sub-bench
-cd $GOPATH/src/github.com/RedisLabs/pubsub-sub-bench
+go get github.com/filipecosta90/pubsub-sub-bench
+cd $GOPATH/src/github.com/filipecosta90/pubsub-sub-bench
 make
 ```
 
