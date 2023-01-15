@@ -33,11 +33,11 @@ type testResult struct {
 	Addresses             []string  `json:"Addresses"`
 }
 
-func subscriberRoutine(addr string, subscriberName string, channel string, printMessages bool, stop chan struct{}, wg *sync.WaitGroup) {
+func subscriberRoutine(addr string, subscriberName string, channel string, printMessages bool, stop chan struct{}, wg *sync.WaitGroup, opts []radix.DialOpt) {
 	// tell the caller we've stopped
 	defer wg.Done()
 
-	conn, _, _, msgCh, _ := bootstrapPubSub(addr, subscriberName, channel)
+	conn, _, _, msgCh, _ := bootstrapPubSub(addr, subscriberName, channel, opts)
 	defer conn.Close()
 
 	for {
@@ -54,9 +54,9 @@ func subscriberRoutine(addr string, subscriberName string, channel string, print
 	}
 }
 
-func bootstrapPubSub(addr string, subscriberName string, channel string) (radix.Conn, error, radix.PubSubConn, chan radix.PubSubMessage, *time.Ticker) {
+func bootstrapPubSub(addr string, subscriberName string, channel string, opts []radix.DialOpt) (radix.Conn, error, radix.PubSubConn, chan radix.PubSubMessage, *time.Ticker) {
 	// Create a normal redis connection
-	conn, err := radix.Dial("tcp", addr)
+	conn, err := radix.Dial("tcp", addr, opts...)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -81,6 +81,8 @@ func bootstrapPubSub(addr string, subscriberName string, channel string) (radix.
 func main() {
 	host := flag.String("host", "127.0.0.1", "redis host.")
 	port := flag.String("port", "6379", "redis port.")
+	password := flag.String("a", "", "Password for Redis Auth.")
+	username := flag.String("user", "", "Used to send ACL style 'AUTH username pass'. Needs -a.")
 	subscribers_placement := flag.String("subscribers-placement-per-channel", "dense", "(dense,sparse) dense - Place all subscribers to channel in a specific shard. sparse- spread the subscribers across as many shards possible, in a round-robin manner.")
 	channel_minimum := flag.Int("channel-minimum", 1, "channel ID minimum value ( each channel has a dedicated thread ).")
 	channel_maximum := flag.Int("channel-maximum", 100, "channel ID maximum value ( each channel has a dedicated thread ).")
@@ -98,13 +100,21 @@ func main() {
 	var nodes []radix.ClusterNode
 	var nodesAddresses []string
 	var node_subscriptions_count []int
+	opts := make([]radix.DialOpt, 0)
+	if *password != "" {
+		if *username != "" {
+			opts = append(opts, radix.DialAuthUser(*username, *password))
+		} else {
+			opts = append(opts, radix.DialAuthPass(*password))
+		}
+	}
 
 	if *test_time != 0 && *messages_per_channel_subscriber != 0 {
 		log.Fatal(fmt.Errorf("--messages and --test-time are mutially exclusive ( please specify one or the other )"))
 	}
 
 	if *distributeSubscribers {
-		nodes, nodesAddresses, node_subscriptions_count = getClusterNodesFromTopology(host, port, nodes, nodesAddresses, node_subscriptions_count)
+		nodes, nodesAddresses, node_subscriptions_count = getClusterNodesFromTopology(host, port, nodes, nodesAddresses, node_subscriptions_count, opts)
 	} else {
 		nodes, nodesAddresses, node_subscriptions_count = getClusterNodesFromArgs(nodes, port, host, nodesAddresses, node_subscriptions_count)
 	}
@@ -132,7 +142,7 @@ func main() {
 				channel := fmt.Sprintf("%s%d", *subscribe_prefix, channel_id)
 				subscriberName := fmt.Sprintf("subscriber#%d-%s%d", channel_subscriber_number, *subscribe_prefix, channel_id)
 				wg.Add(1)
-				go subscriberRoutine(addr.Addr, subscriberName, channel, *printMessages, stopChan, &wg)
+				go subscriberRoutine(addr.Addr, subscriberName, channel, *printMessages, stopChan, &wg, opts)
 			}
 		}
 	}
@@ -205,9 +215,9 @@ func getClusterNodesFromArgs(nodes []radix.ClusterNode, port *string, host *stri
 	return nodes, nodesAddresses, node_subscriptions_count
 }
 
-func getClusterNodesFromTopology(host *string, port *string, nodes []radix.ClusterNode, nodesAddresses []string, node_subscriptions_count []int) ([]radix.ClusterNode, []string, []int) {
+func getClusterNodesFromTopology(host *string, port *string, nodes []radix.ClusterNode, nodesAddresses []string, node_subscriptions_count []int, opts []radix.DialOpt) ([]radix.ClusterNode, []string, []int) {
 	// Create a normal redis connection
-	conn, err := radix.Dial("tcp", fmt.Sprintf("%s:%s", *host, *port))
+	conn, err := radix.Dial("tcp", fmt.Sprintf("%s:%s", *host, *port), opts...)
 	if err != nil {
 		panic(err)
 	}
