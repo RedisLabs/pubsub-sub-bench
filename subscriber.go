@@ -1,10 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	radix "github.com/mediocregopher/radix/v3"
+	radix "github.com/mediocregopher/radix/v4"
 	"io/ioutil"
 	"log"
 	"os"
@@ -33,7 +34,7 @@ type testResult struct {
 	Addresses             []string  `json:"Addresses"`
 }
 
-func subscriberRoutine(addr string, subscriberName string, channel string, printMessages bool, stop chan struct{}, wg *sync.WaitGroup, opts []radix.DialOpt) {
+func subscriberRoutine(addr string, subscriberName string, channel string, printMessages bool, stop chan struct{}, wg *sync.WaitGroup, opts radix.Dialer) {
 	// tell the caller we've stopped
 	defer wg.Done()
 
@@ -54,23 +55,26 @@ func subscriberRoutine(addr string, subscriberName string, channel string, print
 	}
 }
 
-func bootstrapPubSub(addr string, subscriberName string, channel string, opts []radix.DialOpt) (radix.Conn, error, radix.PubSubConn, chan radix.PubSubMessage, *time.Ticker) {
+func bootstrapPubSub(addr string, subscriberName string, channel string, opts radix.Dialer) (radix.Conn, error, radix.PubSubConn, chan radix.PubSubMessage, *time.Ticker) {
 	// Create a normal redis connection
-	conn, err := radix.Dial("tcp", addr, opts...)
+	// TODO change all Dial functions to support radix v4
+	ctx := context.Background()
+	conn, err := opts.Dial(ctx, "tcp", addr)
+	// TODO create a Dial using Dialer
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	err = conn.Do(radix.FlatCmd(nil, "CLIENT", "SETNAME", subscriberName))
+	err = conn.Do(ctx, radix.FlatCmd(nil, "CLIENT", "SETNAME", subscriberName))
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// Pass that connection into PubSub, conn should never get used after this
-	ps := radix.PubSub(conn)
+	ps := radix.PubSubConfig{}.New(conn)
 
 	msgCh := make(chan radix.PubSubMessage)
-	err = ps.Subscribe(msgCh, channel)
+	err = ps.Subscribe(ctx, channel, msgCh)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -96,22 +100,25 @@ func main() {
 	distributeSubscribers := flag.Bool("oss-cluster-api-distribute-subscribers", false, "read cluster slots and distribute subscribers among them.")
 	printMessages := flag.Bool("print-messages", false, "print messages.")
 	dialTimeout := flag.Duration("redis-timeout", time.Second*300, "determines the timeout to pass to redis connection setup. It adjust the connection, read, and write timeouts.")
+	resp := flag.Int("resp", 2, "redis command response protocol (2 - RESP 2, 3 - RESP 3)")
 	flag.Parse()
 
 	totalMessages = 0
 	var nodes []radix.ClusterNode
 	var nodesAddresses []string
 	var node_subscriptions_count []int
-	opts := make([]radix.DialOpt, 0)
+	opts := radix.Dialer{}
 	if *password != "" {
+		opts.AuthPass = *password
 		if *username != "" {
-			opts = append(opts, radix.DialAuthUser(*username, *password))
-		} else {
-			opts = append(opts, radix.DialAuthPass(*password))
+			opts.AuthUser = *username
 		}
 	}
-	opts = append(opts, radix.DialTimeout(*dialTimeout))
-	fmt.Printf("Using a redis connection, read, and write timeout of %v\n", *dialTimeout)
+	if *resp == 2 {
+		opts.Protocol = "2"
+	} else if *resp == 3 {
+		opts.Protocol = "3"
+	}
 	if *test_time != 0 && *messages_per_channel_subscriber != 0 {
 		log.Fatal(fmt.Errorf("--messages and --test-time are mutially exclusive ( please specify one or the other )"))
 	}
@@ -218,14 +225,15 @@ func getClusterNodesFromArgs(nodes []radix.ClusterNode, port *string, host *stri
 	return nodes, nodesAddresses, node_subscriptions_count
 }
 
-func getClusterNodesFromTopology(host *string, port *string, nodes []radix.ClusterNode, nodesAddresses []string, node_subscriptions_count []int, opts []radix.DialOpt) ([]radix.ClusterNode, []string, []int) {
+func getClusterNodesFromTopology(host *string, port *string, nodes []radix.ClusterNode, nodesAddresses []string, node_subscriptions_count []int, opts radix.Dialer) ([]radix.ClusterNode, []string, []int) {
 	// Create a normal redis connection
-	conn, err := radix.Dial("tcp", fmt.Sprintf("%s:%s", *host, *port), opts...)
+	ctx := context.Background()
+	conn, err := opts.Dial(ctx, "tcp", fmt.Sprintf("%s:%s", *host, *port))
 	if err != nil {
 		panic(err)
 	}
 	var topology radix.ClusterTopo
-	err = conn.Do(radix.FlatCmd(&topology, "CLUSTER", "SLOTS"))
+	err = conn.Do(ctx, radix.FlatCmd(&topology, "CLUSTER", "SLOTS"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -292,9 +300,10 @@ func updateCLI(tick *time.Ticker, c chan os.Signal, message_limit int64, w *tabw
 	return false, start, time.Since(start), totalMessages, messageRateTs
 }
 
-func checkClientOutputBufferLimitPubSub(nodes []radix.ClusterNode, client_output_buffer_limit_pubsub *string, opts []radix.DialOpt) {
+func checkClientOutputBufferLimitPubSub(nodes []radix.ClusterNode, client_output_buffer_limit_pubsub *string, opts radix.Dialer) {
 	for _, slot := range nodes {
-		conn, err := radix.Dial("tcp", slot.Addr, opts...)
+		ctx := context.Background()
+		conn, err := opts.Dial(ctx, "tcp", slot.Addr)
 		if err != nil {
 			panic(err)
 		}
@@ -302,7 +311,7 @@ func checkClientOutputBufferLimitPubSub(nodes []radix.ClusterNode, client_output
 		if strings.Compare(*client_output_buffer_limit_pubsub, pubsubTopology) != 0 {
 			fmt.Println(fmt.Sprintf("\tCHANGING DB pubsub topology for address %s from %s to %s", slot.Addr, pubsubTopology, *client_output_buffer_limit_pubsub))
 
-			err = conn.Do(radix.FlatCmd(nil, "CONFIG", "SET", "client-output-buffer-limit", fmt.Sprintf("pubsub %s", *client_output_buffer_limit_pubsub)))
+			err = conn.Do(ctx, radix.FlatCmd(nil, "CONFIG", "SET", "client-output-buffer-limit", fmt.Sprintf("pubsub %s", *client_output_buffer_limit_pubsub)))
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -320,7 +329,8 @@ func checkClientOutputBufferLimitPubSub(nodes []radix.ClusterNode, client_output
 
 func getPubSubBufferLimit(err error, conn radix.Conn) ([]string, error, string) {
 	var topologyResponse []string
-	err = conn.Do(radix.FlatCmd(&topologyResponse, "CONFIG", "GET", "client-output-buffer-limit"))
+	ctx := context.Background()
+	err = conn.Do(ctx, radix.FlatCmd(&topologyResponse, "CONFIG", "GET", "client-output-buffer-limit"))
 	if err != nil {
 		log.Fatal(err)
 	}
