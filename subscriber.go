@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	radix "github.com/mediocregopher/radix/v4"
@@ -34,28 +35,28 @@ type testResult struct {
 	Addresses             []string  `json:"Addresses"`
 }
 
-func subscriberRoutine(addr string, subscriberName string, channel string, printMessages bool, stop chan struct{}, wg *sync.WaitGroup, opts radix.Dialer) {
+func subscriberRoutine(addr string, subscriberName string, channel string, printMessages bool, ctx context.Context, wg *sync.WaitGroup, opts radix.Dialer) {
 	// tell the caller we've stopped
 	defer wg.Done()
 
-	conn, _, _, msgCh, _ := bootstrapPubSub(addr, subscriberName, channel, opts)
-	defer conn.Close()
+	_, _, ps, _ := bootstrapPubSub(addr, subscriberName, channel, opts)
+	defer ps.Close()
 
 	for {
-		select {
-		case msg := <-msgCh:
-			if printMessages {
-				fmt.Println(fmt.Sprintf("received message in channel %s. Message: %s", msg.Channel, msg.Message))
-			}
-			atomic.AddUint64(&totalMessages, 1)
+		msg, err := ps.Next(ctx)
+		if errors.Is(err, context.Canceled) {
 			break
-		case <-stop:
-			return
+		} else if err != nil {
+			panic(err)
 		}
+		if printMessages {
+			fmt.Println(fmt.Sprintf("received message in channel %s. Message: %s", msg.Channel, msg.Message))
+		}
+		atomic.AddUint64(&totalMessages, 1)
 	}
 }
 
-func bootstrapPubSub(addr string, subscriberName string, channel string, opts radix.Dialer) (radix.Conn, error, radix.PubSubConn, chan radix.PubSubMessage, *time.Ticker) {
+func bootstrapPubSub(addr string, subscriberName string, channel string, opts radix.Dialer) (radix.Conn, error, radix.PubSubConn, *time.Ticker) {
 	// Create a normal redis connection
 	// TODO change all Dial functions to support radix v4
 	ctx := context.Background()
@@ -73,13 +74,12 @@ func bootstrapPubSub(addr string, subscriberName string, channel string, opts ra
 	// Pass that connection into PubSub, conn should never get used after this
 	ps := radix.PubSubConfig{}.New(conn)
 
-	msgCh := make(chan radix.PubSubMessage)
-	err = ps.Subscribe(ctx, channel, msgCh)
+	err = ps.Subscribe(ctx, channel)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	return conn, err, ps, msgCh, nil
+	return conn, err, ps, nil
 }
 
 func main() {
@@ -99,7 +99,8 @@ func main() {
 	client_output_buffer_limit_pubsub := flag.String("client-output-buffer-limit-pubsub", "", "Specify client output buffer limits for clients subscribed to at least one pubsub channel or pattern. If the value specified is different that the one present on the DB, this setting will apply.")
 	distributeSubscribers := flag.Bool("oss-cluster-api-distribute-subscribers", false, "read cluster slots and distribute subscribers among them.")
 	printMessages := flag.Bool("print-messages", false, "print messages.")
-	dialTimeout := flag.Duration("redis-timeout", time.Second*300, "determines the timeout to pass to redis connection setup. It adjust the connection, read, and write timeouts.")
+	//TODO FIX ME
+	//dialTimeout := flag.Duration("redis-timeout", time.Second*300, "determines the timeout to pass to redis connection setup. It adjust the connection, read, and write timeouts.")
 	resp := flag.Int("resp", 2, "redis command response protocol (2 - RESP 2, 3 - RESP 3)")
 	flag.Parse()
 
@@ -133,7 +134,23 @@ func main() {
 		checkClientOutputBufferLimitPubSub(nodes, client_output_buffer_limit_pubsub, opts)
 	}
 
-	stopChan := make(chan struct{})
+	ctx := context.Background()
+	// trap Ctrl+C and call cancel on the context
+	// We Use this instead of the previous stopChannel + chan radix.PubSubMessage
+	ctx, cancel := context.WithCancel(ctx)
+	cS := make(chan os.Signal, 1)
+	signal.Notify(cS, os.Interrupt)
+	defer func() {
+		signal.Stop(cS)
+		cancel()
+	}()
+	go func() {
+		select {
+		case <-cS:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	// a WaitGroup for the goroutines to tell us they've stopped
 	wg := sync.WaitGroup{}
@@ -152,7 +169,7 @@ func main() {
 				channel := fmt.Sprintf("%s%d", *subscribe_prefix, channel_id)
 				subscriberName := fmt.Sprintf("subscriber#%d-%s%d", channel_subscriber_number, *subscribe_prefix, channel_id)
 				wg.Add(1)
-				go subscriberRoutine(addr.Addr, subscriberName, channel, *printMessages, stopChan, &wg, opts)
+				go subscriberRoutine(addr.Addr, subscriberName, channel, *printMessages, ctx, &wg, opts)
 			}
 		}
 	}
@@ -202,7 +219,7 @@ func main() {
 	}
 
 	// tell the goroutine to stop
-	close(stopChan)
+	close(c)
 	// and wait for them both to reply back
 	wg.Wait()
 }
