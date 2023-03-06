@@ -58,10 +58,9 @@ func subscriberRoutine(addr string, subscriberName string, channel string, print
 
 func bootstrapPubSub(addr string, subscriberName string, channel string, opts radix.Dialer) (radix.Conn, error, radix.PubSubConn, *time.Ticker) {
 	// Create a normal redis connection
-	// TODO change all Dial functions to support radix v4
 	ctx := context.Background()
 	conn, err := opts.Dial(ctx, "tcp", addr)
-	// TODO create a Dial using Dialer
+
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -101,7 +100,7 @@ func main() {
 	printMessages := flag.Bool("print-messages", false, "print messages.")
 	//TODO FIX ME
 	//dialTimeout := flag.Duration("redis-timeout", time.Second*300, "determines the timeout to pass to redis connection setup. It adjust the connection, read, and write timeouts.")
-	resp := flag.Int("resp", 2, "redis command response protocol (2 - RESP 2, 3 - RESP 3)")
+	resp := flag.String("resp", "", "redis command response protocol (2 - RESP 2, 3 - RESP 3)")
 	flag.Parse()
 
 	totalMessages = 0
@@ -115,9 +114,9 @@ func main() {
 			opts.AuthUser = *username
 		}
 	}
-	if *resp == 2 {
+	if *resp == "2" {
 		opts.Protocol = "2"
-	} else if *resp == 3 {
+	} else if *resp == "3" {
 		opts.Protocol = "3"
 	}
 	if *test_time != 0 && *messages_per_channel_subscriber != 0 {
